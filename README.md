@@ -11,12 +11,15 @@ A minimal, deadlock-proof scaffold you can copy-paste into any data-processing o
 3. [Repository tour](#repository-tour)
 4. [Quick-start (run the demo)](#quick-start-run-the-demo)
 5. [How the pipeline works – code walkthrough](#how-the-pipeline-works--code-walkthrough)
+
    5.1 [Stage anatomy](#51-pipelinestage-anatomy)
+
    5.2 [Safe queue I/O with `robust_put`](#52-safe-queue-io-with-robust_put)
+
    5.3 [Manager orchestration](#53-manager-orchestration)
-6. [Extending to real workloads](#extending-to-real-workloads)
-7. [Troubleshooting cheatsheet](#troubleshooting-cheatsheet)
-8. [License](#license)
+7. [Extending to real workloads](#extending-to-real-workloads)
+8. [Troubleshooting cheatsheet](#troubleshooting-cheatsheet)
+9. [License](#license)
 
 ---
 
