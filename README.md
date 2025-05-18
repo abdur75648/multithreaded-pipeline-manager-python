@@ -1,192 +1,170 @@
-# Robust Multithreaded Pipeline Manager in Python
+# Multithreaded Pipeline Manager in Python
 
-A minimal, deadlock-proof scaffold you can copy-paste into any data-processing or model-inference project.
+![Multithreaded Pipeline Manager](assets/demo.png)
 
----
+A reusable, beginner-friendly code template for creating generic multithreaded data processing pipelines in Python. This repository demonstrates how to build robust pipelines that can handle pre-processing, model inference (simulated), and post-processing stages concurrently, with support for parallelizing CPU-bound sub-tasks within a stage.
 
 ## Table of Contents
 
-1. [Why pipelines?](#why-pipelines)
-2. [Core design concepts](#core-design-concepts)
-3. [Repository tour](#repository-tour)
-4. [Quick-start (run the demo)](#quick-start-run-the-demo)
-5. [How the pipeline works – code walkthrough](#how-the-pipeline-works--code-walkthrough)
+- [Motivation](#motivation)
+- [Core Design Concepts](#core-design-concepts)
+  - [Threads vs. Processes](#threads-vs-processes)
+  - [Queues for Inter-Thread Communication](#queues-for-inter-thread-communication)
+  - [Sentinel Values for Graceful Shutdown](#sentinel-values-for-graceful-shutdown)
+  - [Stopping Events for Error Handling](#stopping-events-for-error-handling)
+  - [ThreadPoolExecutor for Parallel Sub-tasks](#threadpoolexecutor-for-parallel-sub-tasks)
+  - [Deadlock and Race Condition Prevention](#deadlock-and-race-condition-prevention)
+  - [Modularity and Reusability](#modularity-and-reusability)
+- [Repository Tour](#repository-tour)
+  - [File Structure](#file-structure)
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+  - [High-Level Diagram](#high-level-diagram)
+  - [Stage-by-Stage Explanation](#stage-by-stage-explanation)
+  - [Code Walkthrough (Key Components)](#code-walkthrough-key-components)
+- [Extending to Real Workloads](#extending-to-real-workloads)
+- [Troubleshooting Cheatsheet](#troubleshooting-cheatsheet)
+- [License](#license)
+- [Contributing](#contributing)
 
-   5.1 [Stage anatomy](#51-pipelinestage-anatomy)
+## Motivation
 
-   5.2 [Safe queue I/O with `robust_put`](#52-safe-queue-io-with-robust_put)
+Many data processing and machine learning tasks involve a sequence of steps (a pipeline). Running these steps sequentially can be slow, especially if some steps are I/O-bound or CPU/GPU-bound. Multithreading allows different stages of the pipeline to run concurrently, improving throughput and reducing overall processing time.
 
-   5.3 [Manager orchestration](#53-manager-orchestration)
-7. [Extending to real workloads](#extending-to-real-workloads)
-8. [Troubleshooting cheatsheet](#troubleshooting-cheatsheet)
-9. [License](#license)
+This repository helps you:
+- Understand the fundamentals of multithreaded pipelines.
+- Implement robust pipelines with proper error handling.
+- Parallelize CPU-bound sub-tasks using `ThreadPoolExecutor`.
+- Adapt a generic structure for real-world projects.
 
----
+## Core Design Concepts
 
-## Why pipelines?
+### Threads vs. Processes
+- **Threads** share memory and are lightweight—ideal for I/O-bound or GIL-releasing tasks.
+- **Processes** are isolated—better for CPU-bound tasks in native Python.
+- This template uses **threads**, assuming I/O and C-based libraries release the GIL.
 
-Real-world ML and multimedia applications rarely do everything in one step.
-Typical flow:
+### Queues for Inter-Thread Communication
+- `queue.Queue` is used for safe, thread-safe communication.
+- Follows a **producer-consumer** pattern.
+- Supports **backpressure** using `maxsize`.
+
+### Sentinel Values for Graceful Shutdown
+- A unique object like `SENTINEL = object()` signals the end of data.
+- Workers propagate `SENTINEL` downstream and exit cleanly.
+
+### Stopping Events for Error Handling
+- A shared `threading.Event` (`stop_event`) lets workers shut down gracefully on error.
+
+### ThreadPoolExecutor for Parallel Sub-tasks
+- Used within a stage (e.g. post-processing) to run multiple sub-tasks in parallel.
+
+### Deadlock and Race Condition Prevention
+- Clear data flow with `Queue`.
+- `robust_put()` handles blocking puts with timeout and stop signal.
+- Shared state should use `threading.Lock`.
+
+### Modularity and Reusability
+- Create new stages by subclassing `BaseWorker`.
+- `PipelineManager` handles orchestration.
+
+## Repository Tour
+
+### File Structure
 
 ```
-decode → preprocess → model_inference → postprocess → encode/write
-```
 
-Running those steps **sequentially** means idle CPU/GPU time and wasted I/O latency.
-Running them **in separate threads with small bounded queues** lets every stage work concurrently while still limiting memory and providing back-pressure.
-
-The tricky part: **robust shutdown.**
-If a downstream consumer crashes while an upstream producer blocks on `Queue.put()`, you hit the classic bounded-queue deadlock.
-This repo shows a bullet-proof pattern that prevents that failure mode and gracefully shuts down on errors **or Ctrl-C**.
-
----
-
-## Core design concepts
-
-| Concept                           | Take-away                                                                                                                                                                      |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Threading vs. multiprocessing** | Threads are ideal when stages spend time in C/CUDA libraries that release Python’s GIL (e.g., OpenCV, PyTorch GPU). For heavy pure-Python CPU work, you’d switch to processes. |
-| **Bounded queues**                | `Queue(maxsize=N)` keeps RAM in check *and* provides built-in back-pressure.                                                                                                   |
-| **`robust_put()`**                | Wraps a blocking `Queue.put()` in a timeout loop so the caller can notice a global `stop_event` and bail out instead of hanging forever.                                       |
-| **`SENTINEL` object**             | A unique token passed through the pipeline to say “no more data.” Each stage forwards it exactly once, allowing every thread to exit naturally.                                |
-| **`threading.Event()`**           | A single flag shared by all threads. Any fatal exception sets the flag, triggering an orderly shutdown everywhere else.                                                        |
-| **try / except / finally**        | Every stage catches its own exceptions, empties / unblocks its output queue, forwards the sentinel, and *then* dies—ensuring no one upstream is left hanging.                  |
-| **Modular stages**                | Each stage owns only its logic; the infrastructure code lives in `PipelineStage`, so plugging in new stages is trivial and unit-testable.                                      |
-
----
-
-## Repository tour
-
-```
 multithreaded-pipeline-manager-python/
-│
-├── demo.py                      # One-file runnable showcase
-│
-├── pipeline_manager/            # Tiny helper library (≈200 LOC)
-│   ├── __init__.py              # Re-exports public symbols
-│   ├── utils.py                 # SENTINEL, robust_put, logger
-│   ├── stage.py                 # PipelineStage (thread implementation)
-│   └── manager.py               # PipelineManager (start/stop wrapper)
-└── README.md                    # ← you are here
-```
+├── pipeline\_core/
+│   ├── **init**.py
+│   ├── pipeline\_manager.py
+│   └── utils.py
+├── demo.py
+└── README.md
 
-*No packaging or installation ceremony required—just clone and run.*
+````
 
----
+- **`pipeline_core/pipeline_manager.py`**: `PipelineManager` and `BaseWorker` classes.
+- **`pipeline_core/utils.py`**: Utility functions (`robust_put`, `SENTINEL`, logger).
+- **`demo.py`**: Demonstrates building and running a pipeline.
 
-## Quick-start (run the demo)
+## Quick Start
+
+1. Clone or copy files:
 
 ```bash
-git clone https://github.com/abdur75648/multithreaded-pipeline-manager-python.git
-cd multithreaded-pipeline-manager-python
-python3 demo.py
+# git clone https://github.com/yourusername/multithreaded-pipeline-manager-python.git
+# cd multithreaded-pipeline-manager-python
+````
+
+2. Ensure Python 3.8+ is installed.
+
+3. Run the demo:
+
+```bash
+python demo.py
 ```
 
-You’ll see four threads (`Reader`, `UpperCase`, `Reverse`, `Writer`) working in parallel and a clean, coordinated shutdown when either **(a)** the reader finishes after the chosen duration **(b)** you hit *Ctrl +C* or **(c)** a simulated processor error occurs.
+## How It Works
 
----
-
-## How the pipeline works – code walkthrough
-
-### High-level diagram
+### High-Level Diagram
 
 ```
-           Queue(maxsize=N)     Queue(maxsize=N)     Queue(maxsize=N)
-Reader ─────────► Proc#1 ─────────► Proc#2 ─────────► Writer
-  │                │                │                  │
-  │  generates     │ transforms     │ transforms       │ prints /
-  └─ SENTINEL──────┴─ SENTINEL──────┴─ SENTINEL────────┴  finalises
+Input Data --> Queue 1 --> PreProcessingWorker --> Queue 2 --> ModelInferenceWorker --> Queue 3 --> PostProcessingWorker --> Final Output
+                                                (Simulated)                            (with ThreadPoolExecutor for sub-tasks)
 ```
 
-Each arrow is a bounded queue; each box is a `PipelineStage` thread.
-A single `stop_event` and a unique `SENTINEL` coordinate shutdown.
+### Stage-by-Stage Explanation
 
-### 5.1 `PipelineStage` anatomy
+* **Data Producer**: Feeds items into the first queue.
+* **PreProcessingWorker**: Simulates data prep.
+* **ModelInferenceWorker**: Simulates model inference, may raise errors.
+* **PostProcessingWorker**: Submits sub-tasks to a thread pool, buffers and orders results.
 
-```python
-stage = PipelineStage(
-    name="UpperCaseStage",
-    stop_event=stop_event,
-    process_fn=upper_case_fn,  # your business logic here
-    in_q=q_read_to_proc1,
-    out_q=q_proc1_to_proc2,
-)
-stage.start()
-```
+### Code Walkthrough (Key Components)
 
-`PipelineStage` handles **all** the boilerplate:
+#### `PipelineManager`
 
-* timed `Queue.get()` ➜ checks `stop_event`
-* calls your `process_fn`
-* uses `robust_put()` to push to `out_q`
-* catches any exception, sets `stop_event`, drains `out_q`, sends sentinel, logs, exits
+* Manages `stop_event`, progress bar, workers, and queues.
+* `add_worker()`, `start()`, `wait_for_completion()`.
 
-You write only the tiny `process_fn`:
+#### `BaseWorker`
 
-```python
-def upper_case_fn(text: str) -> str:
-    return text.upper()
-```
+* Implements `_run()` and requires `process_item(item)` to be defined.
+* Handles queue communication and `SENTINEL` passing.
 
-Return `SENTINEL` if the stage itself decides the stream is finished. Return `None` to “drop” an item.
+#### `robust_put` and `SENTINEL`
 
-### 5.2 Safe queue I/O with `robust_put`
+* Handles blocked puts safely with timeouts and stop checks.
 
-```python
-from queue import Full
-from threading import Event
-def robust_put(q, item, stop_event: Event, timeout=0.1) -> bool:
-    while not stop_event.is_set():
-        try:
-            q.put(item, timeout=timeout)  # may block if full
-            return True
-        except Full:
-            continue           # queue full → retry / check flag
-    return False               # gave up because stop_event was set
-```
+#### Parallel Post-Processing
 
-Without this helper, an upstream producer would block forever if the queue is full and the consumer thread has died.
+* `PostProcessingWorker` uses a thread pool for parallel sub-tasks.
+* Buffers and re-orders results for consistent output.
 
-### 5.3 Manager orchestration
+## Extending to Real Workloads
 
-```python
-manager = PipelineManager([reader, proc1, proc2, writer])
-manager.start()  # starts all threads + installs SIGINT handler
-manager.join()   # waits for everything to finish (with timeouts)
-```
+* Subclass `BaseWorker` to define custom stages.
+* Use `PipelineManager` to build your pipeline.
+* Handle exceptions inside `process_item`.
+* Use `robust_put` to safely queue items.
+* Tune performance via queue sizes, worker count, etc.
 
-`PipelineManager` is only convenience; you can `.start()` / `.join()` the stages yourself if you prefer.
+## Troubleshooting Cheatsheet
 
----
-
-## Extending to real workloads
-
-* **Video or audio streams:**
-  Replace `reader_fn` with a frame grabber (`cv2.VideoCapture`), `proc_fn` with your ML model (`torch.no_grad()`), `writer_fn` with encoder output.
-
-* **Batching:**
-  Accumulate a list in `process_fn` and emit a batch; upstream/downstream code is unaffected.
-
-* **Multiprocessing:**
-  You can swap `threading.Thread` for `multiprocessing.Process` inside `PipelineStage` if your work is CPU-bound (keep the queue/ sentinel logic identical).
-
-* **Metrics / logging:**
-  Hook Prometheus counters in `process_fn` or extend `PipelineStage` with call-backs—no architectural changes needed.
-
----
-
-## Troubleshooting cheatsheet
-
-| Symptom                               | Likely cause                                                    | Fix                                                                                                 |
-| ------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **Producer thread hangs on `.put()`** | Downstream consumer crashed and queue is full                   | Ensure all puts go through `robust_put()`; verify consumer always forwards `SENTINEL` in `finally`. |
-| **Writer never receives sentinel**    | Some intermediate stage swallowed or failed to forward sentinel | Check that every `finally` block does `out_q.put(SENTINEL)` even on error.                          |
-| **Memory shoots up**                  | Unbounded queues or large back-pressure gap                     | Set `maxsize` small (1–8) and verify upstream rate ≤ downstream rate.                               |
-| **Ctrl-C doesn’t exit**               | Threads not checking `stop_event`                               | Make sure all `Queue.get()` / `put()` are timeout-based and loops break when `stop_event.is_set()`. |
-
----
+| Symptom                   | Cause                                              | Fix                                                                 |
+| ------------------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
+| Pipeline hangs            | Blocked producer or consumer died                  | Use `robust_put`, ensure `SENTINEL` is passed, avoid circular waits |
+| Data not processed        | `SENTINEL` not propagated or workers exit early    | Ensure each stage sends and reacts to `SENTINEL` properly           |
+| Race conditions           | Shared state accessed without lock                 | Use `threading.Lock`                                                |
+| High idle CPU             | Busy-waiting threads                               | Use `queue.get(timeout=...)`                                        |
+| Errors in sub-tasks       | Exceptions in executor workers                     | Catch and handle exceptions in sub-task functions                   |
+| Progress bar not updating | Missing `pbar.update()` or wrong `num_total_items` | Ensure correct configuration                                        |
 
 ## License
 
-[MIT](LICENSE) – free for personal or commercial use.
-PRs, issues, and suggestions are welcome!
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Contributing
+
+Feel free to fork and submit pull requests to improve functionality or documentation. Suggestions and issues are welcome.
